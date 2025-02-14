@@ -662,6 +662,10 @@ def train_model(
 
     sae_only = False
 
+    global global_sae_trainer
+    if global_sae_trainer is None:
+        global_sae_trainer = SaeTrainer(sae)
+
     if training_type == TrainingType.SAE_FULL_FINETUNE or training_type == TrainingType.SAE_LORA:
         sae_only = True
 
@@ -747,7 +751,7 @@ def train_model(
                     alpha_kl = (mse_loss / (kl_loss + 1e-8)).detach()
 
                     # Reconstruction loss matches original mse loss scale so an optional sparsity penalty stays relevant
-                    loss = (kl_loss * alpha_kl + mse_loss) * 0.5
+                    loss = (kl_loss * alpha_kl + mse_loss) * 0.5 + GlobalSAE.aux_loss
                     loss.backward()
                     if training_type == TrainingType.SAE_FULL_FINETUNE:
                         sae.decoder.weight.grad = remove_gradient_parallel_to_decoder_directions(
@@ -867,13 +871,66 @@ class GlobalSAE:
     use_sae = True
     reconstruction_loss = None
     aux_loss = None
+
     # sparsity_loss = None # Not needed for TopK
+
+
+global_sae_trainer = None
+
+
+class SaeTrainer:
+    def __init__(self, sae: topk_sae.TopKSAE):
+        self.steps = 0
+        self.d_sae = sae.d_sae
+        self.d_in = sae.d_in
+        self.auxk_alpha = 1 / 32
+        self.top_k_aux = sae.d_in // 2
+        self.num_tokens_since_fired = torch.zeros(self.d_sae, dtype=torch.long, device=sae.device)
+        self.dead_feature_threshold = 10_000_000
+        self.ae = sae
+        self.dead_features = 0
+
+    def get_auxiliary_loss(self, residual_BD: torch.Tensor, post_relu_acts_BF: torch.Tensor):
+        dead_features = self.num_tokens_since_fired >= self.dead_feature_threshold
+        self.dead_features = int(dead_features.sum())
+
+        if self.dead_features > 0:
+            k_aux = min(self.top_k_aux, self.dead_features)
+
+            auxk_latents = torch.where(dead_features[None], post_relu_acts_BF, -torch.inf)
+
+            # Top-k dead latents
+            auxk_acts, auxk_indices = auxk_latents.topk(k_aux, sorted=False)
+
+            auxk_buffer_BF = torch.zeros_like(post_relu_acts_BF)
+            auxk_acts_BF = auxk_buffer_BF.scatter_(dim=-1, index=auxk_indices, src=auxk_acts)
+
+            # Note: decoder(), not decode(), as we don't want to apply the bias
+            x_reconstruct_aux = self.ae.decoder(auxk_acts_BF)
+            l2_loss_aux = (
+                (residual_BD.float() - x_reconstruct_aux.float()).pow(2).sum(dim=-1).mean()
+            )
+
+            self.pre_norm_auxk_loss = l2_loss_aux
+
+            # normalization from OpenAI implementation: https://github.com/openai/sparse_autoencoder/blob/main/sparse_autoencoder/kernels.py#L614
+            residual_mu = residual_BD.mean(dim=0)[None, :].broadcast_to(residual_BD.shape)
+            loss_denom = (residual_BD.float() - residual_mu.float()).pow(2).sum(dim=-1).mean()
+            normalized_auxk_loss = l2_loss_aux / loss_denom
+
+            return normalized_auxk_loss.nan_to_num(0.0)
+        else:
+            self.pre_norm_auxk_loss = -1
+            return torch.tensor(0, dtype=residual_BD.dtype, device=residual_BD.device)
 
 
 def get_sae_hook(sae_module, tokenizer, sae_from_hf=False):
     def sae_reconstruction_hook(module, input, output):
         if not GlobalSAE.use_sae:
             return output
+
+        if global_sae_trainer is None:
+            raise ValueError
 
         original_shape = output[0].shape
         output_tensor = output[0]
@@ -898,14 +955,30 @@ def get_sae_hook(sae_module, tokenizer, sae_from_hf=False):
             # Where mask is False (special tokens), use original output
             reconstructed_output = torch.where(token_mask, reconstructed_output, original_outputs)
 
-        else:
-            # Process all tokens through SAE as before
-            flat_output = output_tensor.reshape(-1, original_shape[-1])
-            reconstructed_output = sae_module(flat_output).to(dtype=flat_output.dtype)
-            reconstructed_output = reconstructed_output.reshape(original_shape)
+        # Process all tokens through SAE as before
+        flat_output = output_tensor.reshape(-1, original_shape[-1])
+
+        f, top_acts_BK, top_indices_BK, post_relu_acts_BF = sae_module.encode(
+            flat_output, return_topk=True, use_threshold=False
+        )
+        reconstructed_output = sae_module.decode(f).to(dtype=flat_output.dtype)
+
+        reconstructed_output = reconstructed_output.reshape(original_shape)
 
         mse = torch.nn.functional.mse_loss(reconstructed_output, output_tensor)
         GlobalSAE.reconstruction_loss = mse
+
+        resid = (output_tensor - reconstructed_output).detach()
+        resid = einops.rearrange("B L D -> (B L) D")
+
+        num_tokens_in_step = flat_output.size(0)
+        did_fire = torch.zeros_like(global_sae_trainer.num_tokens_since_fired, dtype=torch.bool)
+        did_fire[top_indices_BK.flatten()] = True
+        global_sae_trainer.num_tokens_since_fired += num_tokens_in_step
+        global_sae_trainer.num_tokens_since_fired[did_fire] = 0
+
+        aux_loss = global_sae_trainer.get_auxiliary_loss(resid, post_relu_acts_BF)
+        GlobalSAE.aux_loss = aux_loss * global_sae_trainer.auxk_alpha
 
         return (reconstructed_output,) + output[1:]
 

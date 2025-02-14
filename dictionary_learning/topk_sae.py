@@ -3,6 +3,7 @@ import json
 import torch
 import torch.nn as nn
 from huggingface_hub import hf_hub_download
+from typing import Optional
 
 import dictionary_learning.base_sae as base_sae
 
@@ -61,6 +62,24 @@ class TopKSAE(base_sae.BaseSAE):
         x = self.encode(x)
         recon = self.decode(x)
         return recon
+
+    def from_pretrained(path, k: Optional[int] = None, device=None):
+        """
+        Load a pretrained autoencoder from a file.
+        """
+        state_dict = torch.load(path)
+        dict_size, activation_dim = state_dict["encoder.weight"].shape
+
+        if k is None:
+            k = state_dict["k"].item()
+        elif "k" in state_dict and k != state_dict["k"].item():
+            raise ValueError(f"k={k} != {state_dict['k'].item()}=state_dict['k']")
+
+        autoencoder = TopKSAE(activation_dim, dict_size, k)
+        autoencoder.load_state_dict(state_dict)
+        if device is not None:
+            autoencoder.to(device)
+        return autoencoder
 
 
 def load_dictionary_learning_topk_sae(

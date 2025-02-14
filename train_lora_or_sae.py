@@ -37,7 +37,7 @@ class args:
     ctx_len = 1024
     num_val_tokens = 1_000_000  # 1_000_000
     # num_val_tokens = 10_000  # 1_000_000
-    examples_per_eval = 1000  # 1000
+    examples_per_eval = 10000  # 1000
     log_steps = 100
 
 
@@ -84,8 +84,14 @@ def main(
     print(f"Loaded {model_name} model and tokenizer:")
     # print(model)
 
-    sae_module = topk_sae.load_dictionary_learning_topk_sae(
-        repo_id=sae_repo, filename=sae_path, model_name=model_name, device=device, dtype=dtype
+    sae_module = topk_sae.TopKSAE(
+        d_in=2304,
+        d_sae=2**14,
+        k=80,
+        model_name=model_name,
+        hook_layer=12,
+        device=device,
+        dtype=dtype,
     )
     print("sae module", sae_module)
 
@@ -225,6 +231,7 @@ def main(
 if __name__ == "__main__":
     """python train_lora_or_sae.py --device 0 --model_type "pythia" --sae_layer 8 --rank 16 --num_train_examples 15000 --save_model --trainer_id 2 --LoRA_layers sae_lora
     python train_lora_or_sae.py --device 0 --model_type "gemma" --sae_layer 12 --rank 16 --num_train_examples 15000 --save_model --trainer_id 2 --LoRA_layers sae_lora
+    python train_lora_or_sae.py --device 0 --model_type "gemma" --sae_layer 12 --rank 16 --num_train_examples 500000000 --save_model --trainer_id 2 --LoRA_layers sae_full_finetune
     """
     # Run Experiment Args
     parser = argparse.ArgumentParser(description="Arguments related to running experiment")
@@ -250,7 +257,7 @@ if __name__ == "__main__":
         "--num_train_examples",
         type=int,
         help="Number of training examples",
-        choices=[30, 150, 300, 3_000, 15_000, 30_000, 100_000],
+        choices=[30, 150, 300, 3_000, 15_000, 30_000, 100_000, 500_000_000],
         required=True,
     )
     parser.add_argument(

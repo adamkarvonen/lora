@@ -6,6 +6,7 @@ import torch.nn as nn
 from transformer_lens import HookedTransformer
 
 import dictionary_learning.custom_sae_config as sae_config
+import utils
 
 
 class BaseSAE(nn.Module, ABC):
@@ -24,6 +25,11 @@ class BaseSAE(nn.Module, ABC):
         # Required parameters
         self.decoder = nn.Linear(d_sae, d_in, bias=False)
         self.encoder = nn.Linear(d_in, d_sae)
+
+        self.decoder.weight.data = utils.set_decoder_norm_to_unit_norm(
+            self.decoder.weight, d_in, d_sae
+        )
+        self.encoder.weight.data = self.decoder.weight.T.clone()
 
         self.b_dec = nn.Parameter(torch.zeros(d_in))
 
