@@ -15,7 +15,7 @@ cmd = f"{base_cmd} --rank 16 --LoRA_layers sae_full_finetune"
 run_command(cmd)
 
 # Parameters to iterate over
-ranks = [16, 64]
+ranks = [64, 256]
 lora_layers = ["adapter_only", "adapter_and_sae"]
 
 # # Run LoRA variations

@@ -170,8 +170,8 @@ def main(
         sae_module = sae_module.to(dtype=torch.float32)
 
     if (
-        training_type == TrainingType.ADAPTER_AND_SAE
-        or training_type == TrainingType.ADAPTER_ONLY
+        training_type == TrainingType.MLP_ADAPTER_AND_SAE
+        or training_type == TrainingType.MLP_ADAPTER_ONLY
     ):
         if model_name == "google/gemma-2-2b":
             d_in = 2304
@@ -179,7 +179,7 @@ def main(
             d_in = 768
         else:
             raise ValueError("Unrecognized model")
-        adapter = linear_adapter.LinearAdapter(d_in, peft_rank)
+        adapter = linear_adapter.MLPAdapter(d_in, peft_rank)
         adapter = adapter.to(device=device, dtype=torch.float32)
     else:
         adapter = None
@@ -191,8 +191,8 @@ def main(
 
     hook_handle = None
     if (
-        training_type == TrainingType.ADAPTER_AND_SAE
-        or training_type == TrainingType.ADAPTER_ONLY
+        training_type == TrainingType.MLP_ADAPTER_AND_SAE
+        or training_type == TrainingType.MLP_ADAPTER_ONLY
     ):
         print(f"Registering SAE and adapter hook (rank {peft_rank})")
         hook_handle = peft_model_layers[sae_layer].register_forward_hook(
@@ -253,8 +253,8 @@ def main(
     ):
         utils.save_sae(sae_module, peft_rank, **kwargs)
     elif (
-        training_type == TrainingType.ADAPTER_AND_SAE
-        or training_type == TrainingType.ADAPTER_ONLY
+        training_type == TrainingType.MLP_ADAPTER_AND_SAE
+        or training_type == TrainingType.MLP_ADAPTER_ONLY
     ):
         pass
     else:
@@ -333,9 +333,9 @@ if __name__ == "__main__":
     elif args.LoRA_layers == "sae_full_finetune":
         training_type = TrainingType.SAE_FULL_FINETUNE
     elif args.LoRA_layers == "adapter_only":
-        training_type = TrainingType.ADAPTER_ONLY
+        training_type = TrainingType.MLP_ADAPTER_ONLY
     elif args.LoRA_layers == "adapter_and_sae":
-        training_type = TrainingType.ADAPTER_AND_SAE
+        training_type = TrainingType.MLP_ADAPTER_AND_SAE
     else:
         training_type = TrainingType.LORA
 
